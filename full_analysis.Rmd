@@ -1,0 +1,125 @@
+---
+title: "Code availability for the paper Mutant Huntingtin impairs neurodevelopment in human brain organoids through CHCHD2-mediated neurometabolic failure"
+output: html_notebook
+---
+
+```{r}
+#R version 4.2.2
+library(Seurat) #version 5.0.2 
+library(dplyr) #version 1.1.4
+library(ggplot2) #version 3.5.0
+```
+# Data pre-processing
+Read digital gene expression matrices (generated with Cell Ranger v7.1.0 and GRCh38-2020-A) and create Seurat objects for each sample keeping barcodes with at least 500 detected genes and genes detected in at least 5 cells
+```{r}
+WT_1= Read10X('../GEO_submission/cellranger_DGE/WT_1/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+WT_1$sample_id= 'WT_1'
+
+WT_2= Read10X('../GEO_submission/cellranger_DGE/WT_2/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+WT_2$sample_id= 'WT_2'
+
+WT_3= Read10X('../GEO_submission/cellranger_DGE/WT_3/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+WT_3$sample_id= 'WT_3'
+
+HD_1= Read10X('../GEO_submission/cellranger_DGE/HD_1/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+HD_1$sample_id= 'HD_1'
+
+HD_2= Read10X('../GEO_submission/cellranger_DGE/HD_2/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+HD_2$sample_id= 'HD_2'
+
+HD_3= Read10X('../GEO_submission/cellranger_DGE/HD_3/') %>% CreateSeuratObject(min.cells = 5, min.features = 500) %>% subset(nCount_RNA > 1500)
+HD_3$sample_id= 'HD_3'
+```
+
+Merge Seurat objects and add 'condition' metadata
+```{r}
+full_object = merge(WT_1, list(WT_2, WT_3, HD_1, HD_2, HD_3))
+
+full_object$condition= NA
+full_object$condition[full_object$sample_id %in% c('WT_1', 'WT_2', 'WT_3')] = 'WT/WT'
+full_object$condition[full_object$sample_id %in% c('HD_1', 'HD_2', 'HD_3')] = '70Q/70Q'
+remove(WT_1, WT_2, WT_3, HD_1, HD_2, HD_3)
+```
+
+Normalize and integrate data to remove batch effects (takes some time, feel free to skip and import pre-processed object)
+```{r}
+DefaultAssay(full_object) = 'RNA'
+
+full_object <- full_object %>%
+  NormalizeData() %>% FindVariableFeatures() %>% ScaleData() %>% RunPCA(reduction.name = "pca") 
+
+full_object <- IntegrateLayers(
+  object = full_object, method = CCAIntegration,
+  orig.reduction = "pca", new.reduction = "cca")
+```
+
+Identify unbiased clusters
+```{r}
+full_object <- full_object %>% FindNeighbors(reduction = "cca", dims = 1:30) %>% FindClusters(cluster.name = "cca_clusters") 
+```
+
+Cells in clusters 11 and 17 are marked by ribosomal and mitochondrial gene expression, respectively, rather than cell type markers and are thus removed as bona-fide 'low quality cells'
+```{r}
+full_object = full_object %>% 
+  subset(idents = c(11, 17), invert = TRUE) %>%
+  FindNeighbors(reduction = "cca", dims = 1:30) %>% FindClusters(cluster.name = "cca_clusters") %>%
+  RunUMAP(reduction = "cca", dims = 1:30, reduction.name = "umap.cca")
+
+DimPlot(full_object, label = T, group.by = 'cca_clusters', reduction = 'umap.cca', split.by = 'condition') +coord_fixed() +NoAxes() + ggtitle('')
+```
+
+# Data analysis
+
+Import pre-processed seurat object from GEO (RECOMMENDED)
+```{r}
+full_object= readRDS('../GEO_submission/full_object.rds')
+```
+
+Marker-based cluster annotation of main cell types (Supplementary Data 1)
+```{r}
+full_object= JoinLayers(full_object)
+cluster_markers= FindAllMarkers(full_object, only.pos = T, min.pct = 0.25)
+
+full_object <- RenameIdents(object = full_object, 
+                         '0' = 'Progenitors', 
+                         '1' = 'Mature neurons',
+                         '2' = 'Mature neurons', 
+                         '3' = 'Progenitors', 
+                         '4' = 'Mature neurons', 
+                         '5' = 'Maturing neurons', 
+                         '6' = 'Mature neurons',
+                         '7' = 'Mature neurons',  
+                         '8' = 'Mature neurons', 
+                         '9' = 'Mature neurons', 
+                         '10'= 'Mature neurons',
+                         '11'= 'Progenitors',
+                         '12'= 'Mature neurons', 
+                         '13'= 'Mature neurons', 
+                         '14'= 'Mature neurons', 
+                         '15'= 'Progenitors',
+                         '16'='Proliferating progenitors',
+                         '17'='Proliferating progenitors')
+
+full_object$celltype_annotation <- Idents(full_object)
+full_object$celltype_annotation= factor(as.character(full_object$celltype_annotation), levels=rev(c('Proliferating progenitors','Progenitors',  'Maturing neurons','Mature neurons')))
+```
+
+Generate plot for figure panels (Figures 2e-g and S3e-f)
+```{r}
+color_palette= c('Proliferating progenitors'= '#D9ED92','Progenitors'='#76C893',  'Maturing neurons'="#168AAD",'Mature neurons'="#184E77")
+
+# Figure 2.e
+DimPlot(full_object, label = F, group.by = 'celltype_annotation', reduction = 'umap.cca', split.by = 'condition', cols = color_palette) +coord_fixed() +NoAxes() + ggtitle('')
+
+# Figure 2.f
+ggplot(full_object@meta.data, aes(x= condition,fill=celltype_annotation)) + geom_bar(position='fill') + NoLegend()+RotatedAxis()+xlab('')+ scale_fill_manual(values = color_palette)
+
+# Figure 2.g
+FeaturePlot(full_object, c('PTPRZ1', 'TOP2A', 'ROBO3', 'MAPT'), reduction = 'umap.cca', max.cutoff = 1.5) *NoAxes()*coord_fixed()
+
+# Figure S3.e
+ggplot(full_object@meta.data, aes(x= sample_id,fill=celltype_annotation)) + geom_bar(position='fill') + NoLegend()+RotatedAxis()+xlab('')+ scale_fill_manual(values = color_palette)
+
+# Figure S3.f
+DimPlot(full_object, label = F, group.by = 'celltype_annotation', reduction = 'umap.cca', split.by = 'sample_id', ncol=3, cols = color_palette) + NoLegend() +coord_fixed() +NoAxes() + ggtitle('')
+```
